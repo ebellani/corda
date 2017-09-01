@@ -191,12 +191,10 @@ sealed class TypeNotation : DescribedType {
     companion object {
         fun get(obj: Any): TypeNotation {
             val describedType = obj as DescribedType
-            if (describedType.descriptor == CompositeType.DESCRIPTOR) {
-                return CompositeType.get(describedType)
-            } else if (describedType.descriptor == RestrictedType.DESCRIPTOR) {
-                return RestrictedType.get(describedType)
-            } else {
-                throw NotSerializableException("Unexpected descriptor ${describedType.descriptor}.")
+            return when (describedType.descriptor) {
+                CompositeType.DESCRIPTOR -> CompositeType.get(describedType)
+                RestrictedType.DESCRIPTOR -> RestrictedType.get(describedType)
+                else -> throw NotSerializableException("Unexpected descriptor ${describedType.descriptor}.")
             }
         }
     }
@@ -360,6 +358,7 @@ data class ReferencedObject(private val refCounter: Int) : DescribedType {
 }
 
 private val ARRAY_HASH: String = "Array = true"
+private val ENUM_HASH: String = "Enum = true"
 private val ALREADY_SEEN_HASH: String = "Already seen = true"
 private val NULLABLE_HASH: String = "Nullable = true"
 private val NOT_NULLABLE_HASH: String = "Nullable = false"
@@ -408,14 +407,17 @@ private fun fingerprintForType(type: Type, contextType: Type?, alreadySeen: Muta
     } else {
         alreadySeen += type
         try {
-            if (type is SerializerFactory.AnyType) {
-                hasher.putUnencodedChars(ANY_TYPE_HASH)
-            } else if (type is Class<*>) {
-                when {
+            when (type) {
+                is SerializerFactory.AnyType -> hasher.putUnencodedChars(ANY_TYPE_HASH)
+                is Class<*> -> when {
                     type.isArray -> fingerprintForType(type.componentType, contextType, alreadySeen, hasher, factory).putUnencodedChars(ARRAY_HASH)
                     SerializerFactory.isPrimitive(type) ||
-                    isCollectionOrMap(type) ||
-                    type.isEnum -> hasher.putUnencodedChars(type.name)
+                    isCollectionOrMap(type) -> hasher.putUnencodedChars(type.name)
+                    type.isEnum -> {
+                        // ensures any change to the enum (adding constants) will trigger the need for evolution
+                        hasher.apply { type.enumConstants.forEach { putUnencodedChars(it.toString())
+                        }}.putUnencodedChars(type.name).putUnencodedChars(ARRAY_HASH)
+                    }
                     else ->
                         hasher.fingerprintWithCustomSerializerOrElse(factory, type, type) {
                         if (type.kotlin.objectInstance != null) {
@@ -427,29 +429,28 @@ private fun fingerprintForType(type: Type, contextType: Type?, alreadySeen: Muta
                         }
                     }
                 }
-            } else if (type is ParameterizedType) {
-                // Hash the rawType + params
-                val clazz = type.rawType as Class<*>
-                val startingHash = if (isCollectionOrMap(clazz)) {
-                    hasher.putUnencodedChars(clazz.name)
-                } else {
-                    hasher.fingerprintWithCustomSerializerOrElse(factory, clazz, type) {
-                        fingerprintForObject(type, type, alreadySeen, hasher, factory)
+                is ParameterizedType -> {
+                    // Hash the rawType + params
+                    val clazz = type.rawType as Class<*>
+                    val startingHash = if (isCollectionOrMap(clazz)) {
+                        hasher.putUnencodedChars(clazz.name)
+                    } else {
+                        hasher.fingerprintWithCustomSerializerOrElse(factory, clazz, type) {
+                            fingerprintForObject(type, type, alreadySeen, hasher, factory)
+                        }
+                    }
+                    // ... and concatentate the type data for each parameter type.
+                    type.actualTypeArguments.fold(startingHash) {
+                        orig, paramType -> fingerprintForType(paramType, type, alreadySeen, orig, factory)
                     }
                 }
-                // ... and concatentate the type data for each parameter type.
-                type.actualTypeArguments.fold(startingHash) { orig, paramType -> fingerprintForType(paramType, type, alreadySeen, orig, factory) }
-            } else if (type is GenericArrayType) {
                 // Hash the element type + some array hash
-                fingerprintForType(type.genericComponentType, contextType, alreadySeen, hasher, factory).putUnencodedChars(ARRAY_HASH)
-            } else if (type is TypeVariable<*>) {
+                is GenericArrayType -> fingerprintForType(type.genericComponentType, contextType, alreadySeen,
+                        hasher, factory).putUnencodedChars(ARRAY_HASH)
                 // TODO: include bounds
-                hasher.putUnencodedChars(type.name).putUnencodedChars(TYPE_VARIABLE_HASH)
-            } else if (type is WildcardType) {
-                hasher.putUnencodedChars(type.typeName).putUnencodedChars(WILDCARD_TYPE_HASH)
-            }
-            else {
-                throw NotSerializableException("Don't know how to hash")
+                is TypeVariable<*> -> hasher.putUnencodedChars(type.name).putUnencodedChars(TYPE_VARIABLE_HASH)
+                is WildcardType -> hasher.putUnencodedChars(type.typeName).putUnencodedChars(WILDCARD_TYPE_HASH)
+                else -> throw NotSerializableException("Don't know how to hash")
             }
         } catch(e: NotSerializableException) {
             val msg = "${e.message} -> $type"

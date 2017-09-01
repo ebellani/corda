@@ -164,7 +164,7 @@ class EnumTests {
         DeserializationInput(sf1).deserialize(SerializedBytes<C>(sc2))
     }
 
-    @Test
+    @Test(expected = NotSerializableException::class)
     fun changedEnum2() {
         val path = EnumTests::class.java.getResource("EnumTests.changedEnum2")
         val f = File(path.toURI())
@@ -184,8 +184,6 @@ class EnumTests {
         val sc2 = f.readBytes()
 
         // we expect this to throw
-        val obj = DeserializationInput(sf1).deserialize(SerializedBytes<C>(sc2))
-
-        assertEquals(a, obj.a)
+        DeserializationInput(sf1).deserialize(SerializedBytes<C>(sc2))
     }
 }

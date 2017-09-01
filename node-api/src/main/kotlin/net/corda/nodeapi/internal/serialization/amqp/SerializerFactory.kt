@@ -46,9 +46,12 @@ class SerializerFactory(val whitelist: ClassWhitelist, cl: ClassLoader) {
     val classloader: ClassLoader
         get() = classCarpenter.classloader
 
-    fun getEvolutionSerializer(typeNotation: TypeNotation, newSerializer: ObjectSerializer): AMQPSerializer<Any> {
+    private fun getEvolutionSerializer(typeNotation: TypeNotation, newSerializer: AMQPSerializer<Any>): AMQPSerializer<Any> {
         return serializersByDescriptor.computeIfAbsent(typeNotation.descriptor.name!!) {
-            EvolutionSerializer.make(typeNotation as CompositeType, newSerializer, this)
+            when (typeNotation) {
+                is CompositeType -> EvolutionSerializer.make(typeNotation, newSerializer as ObjectSerializer, this)
+                is RestrictedType -> throw NotSerializableException("Enum evolution is not currently supported")
+            }
         }
     }
 
@@ -195,7 +198,7 @@ class SerializerFactory(val whitelist: ClassWhitelist, cl: ClassLoader) {
                 // doesn't match that of the serialised object then we are dealing with  different
                 // instance of the class, as such we need to build an EvolutionSerialiser
                 if (serialiser.typeDescriptor != typeNotation.descriptor.name) {
-                    getEvolutionSerializer(typeNotation, serialiser as ObjectSerializer)
+                    getEvolutionSerializer(typeNotation, serialiser)
                 }
             } catch (e: ClassNotFoundException) {
                 if (sentinel || (typeNotation !is CompositeType)) throw e
@@ -215,20 +218,9 @@ class SerializerFactory(val whitelist: ClassWhitelist, cl: ClassLoader) {
         is RestrictedType -> processRestrictedType(typeNotation) // Collection / Map, possibly with generics
     }
 
-    private fun processRestrictedType(typeNotation: RestrictedType): AMQPSerializer<Any> {
-        // TODO: class loader logic, and compare the schema.
-        val type = typeForName(typeNotation.name, classloader)
-
-        // this might not be true in the future but as the code stands *now* enum types are the
-        // only restricted types that have choices
-        if (typeNotation.choices.isNotEmpty() && !type.asClass()!!.isEnum) {
-            throw NotSerializableException("Choices should only be provided for enum types")
-        } else if (type.asClass()!!.isEnum && typeNotation.choices.isEmpty()) {
-            throw NotSerializableException("Enum types must have choices (enum values)")
-        }
-
-        return get(null, type)
-    }
+    // TODO: class loader logic, and compare the schema.
+    private fun processRestrictedType(typeNotation: RestrictedType) = get(null,
+            typeForName(typeNotation.name, classloader))
 
     private fun processCompositeType(typeNotation: CompositeType): AMQPSerializer<Any> {
         // TODO: class loader logic, and compare the schema.
